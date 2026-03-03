@@ -189,6 +189,46 @@ export default function Home() {
 
 
 
+      {/* Error testing (trigger 500, 404, runtime error) */}
+      <section className="py-8 container mx-auto px-4 border-t border-gray-800">
+        <h2 className="text-lg font-semibold mb-3 text-gray-400">Error testing</h2>
+        <div className="flex flex-wrap gap-3">
+          <Button
+            variant="outline"
+            className="border-red-500/50 text-red-400 hover:bg-red-500/10"
+            onClick={async () => {
+              const res = await fetch("/api/errors/500");
+              const data = await res.json().catch(() => ({}));
+              alert(`500: ${res.status}\n${JSON.stringify(data, null, 2)}`);
+            }}
+          >
+            Trigger 500
+          </Button>
+          <Button
+            variant="outline"
+            className="border-amber-500/50 text-amber-400 hover:bg-amber-500/10"
+            onClick={async () => {
+              const res = await fetch("/api/errors/404");
+              const data = await res.json().catch(() => ({}));
+              alert(`404: ${res.status}\n${JSON.stringify(data, null, 2)}`);
+            }}
+          >
+            Trigger 404
+          </Button>
+          <Button
+            variant="outline"
+            className="border-rose-500/50 text-rose-400 hover:bg-rose-500/10"
+            onClick={async () => {
+              const res = await fetch("/api/errors/throw");
+              const text = await res.text();
+              alert(`Runtime error (server threw): ${res.status}\n${text.slice(0, 200)}`);
+            }}
+          >
+            Trigger runtime error
+          </Button>
+        </div>
+      </section>
+
       {/* Footer */}
       <footer className="border-t border-gray-800 py-8">
         <div className="container mx-auto px-4">
