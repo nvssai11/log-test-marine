@@ -4,6 +4,7 @@
  */
 
 import { isChaosModeEnabled, logChaosError } from '@/lib/chaos';
+import { logInfo } from '@/lib/logger';
 
 export async function register() {
   if (process.env.NEXT_RUNTIME !== 'nodejs') return;
@@ -16,4 +17,9 @@ export async function register() {
     });
     process.exit(1);
   }
+
+  logInfo('Application started', {
+    runtime: process.env.NEXT_RUNTIME,
+    node_version: process.version,
+  });
 }
