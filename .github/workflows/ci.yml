@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+
 concurrency: cicd-${{ github.ref }}
 
 jobs:
@@ -21,10 +22,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: azure/login@v2
+      - name: Azure Login
+        uses: azure/login@v2
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
-      - uses: azure/docker-login@v2
+      - name: Docker Login
+        uses: azure/docker-login@v2
         with:
           login-server: ${{ secrets.ACR_LOGIN_SERVER }}
           username: ${{ secrets.ACR_USERNAME }}
@@ -33,8 +36,8 @@ jobs:
         run: |
           docker build -f Dockerfile.frontend \
             --build-arg NEXT_PUBLIC_API_URL=${{ secrets.BACKEND_PUBLIC_URL || '' }} \
-            -t ${{ secrets.ACR_LOGIN_SERVER }}/workflow-frontend2:latest .
-          docker push ${{ secrets.ACR_LOGIN_SERVER }}/workflow-frontend2:latest
+            -t ${{ secrets.ACR_LOGIN_SERVER }}/workflow-frontend:latest .
+          docker push ${{ secrets.ACR_LOGIN_SERVER }}/workflow-frontend:latest
       - name: Get AKS credentials
         run: |
           az aks get-credentials \
@@ -51,7 +54,7 @@ jobs:
             --docker-password=${{ secrets.ACR_PASSWORD }} \
             -n workflow-dashboard \
             --dry-run=client -o yaml | kubectl apply -f -
-      - name: Apply frontend deployment
+      - name: Apply deployments
         run: |
           ACR="${{ secrets.ACR_LOGIN_SERVER }}"
           sed "s|ACR_REGISTRY|$ACR|g" k8s/frontend-deployment.yaml | kubectl apply -f -
