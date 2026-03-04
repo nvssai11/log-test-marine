@@ -1,67 +1,84 @@
-name: CI/CD
-
-on:
+name: CI/CD Pipeline
+'on':
   push:
-    branches: [main]
-  workflow_dispatch:
-concurrency: cicd-${{ github.ref }}
-
+    branches:
+    - main
+  workflow_dispatch: {}
+concurrency:
+  group: cicd-${{ github.ref }}
+  cancel-in-progress: false
 jobs:
   ci:
+    name: CI
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Install dependencies
-        run: npm ci || npm install
-      - name: Build
-        run: npm run build
-
+    - uses: actions/checkout@v4
+    - name: Set up Node
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+    - name: Install Dependencies
+      run: npm install
+    - name: Run Tests (optional)
+      run: if npm run 2>&1 | grep -q "test"; then npm test; else echo "No test script
+        found, skipping tests"; fi
   cd:
-    needs: ci
+    name: CD (ACR + AKS)
     runs-on: ubuntu-latest
+    needs:
+    - ci
     steps:
-      - uses: actions/checkout@v4
-      - uses: azure/login@v2
-        with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }}
-      - uses: azure/docker-login@v2
-        with:
-          login-server: ${{ secrets.ACR_LOGIN_SERVER }}
-          username: ${{ secrets.ACR_USERNAME }}
-          password: ${{ secrets.ACR_PASSWORD }}
-      - name: Build and push frontend image
-        run: |
-          docker build -f Dockerfile.frontend \
-            --build-arg NEXT_PUBLIC_API_URL=${{ secrets.BACKEND_PUBLIC_URL || '' }} \
-            -t ${{ secrets.ACR_LOGIN_SERVER }}/workflow-frontend:latest .
-          docker push ${{ secrets.ACR_LOGIN_SERVER }}/workflow-frontend:latest
-      - name: Get AKS credentials
-        run: |
-          az aks get-credentials \
-            --resource-group ${{ secrets.AKS_RESOURCE_GROUP }} \
-            --name ${{ secrets.AKS_CLUSTER_NAME }} \
-            --overwrite-existing
-      - name: Apply namespace
-        run: kubectl apply -f k8s/namespace.yaml
-      - name: Create ACR pull secret
-        run: |
-          kubectl create secret docker-registry acr-pull-secret \
-            --docker-server=${{ secrets.ACR_LOGIN_SERVER }} \
-            --docker-username=${{ secrets.ACR_USERNAME }} \
-            --docker-password=${{ secrets.ACR_PASSWORD }} \
-            -n workflow-dashboard \
-            --dry-run=client -o yaml | kubectl apply -f -
-      - name: Apply frontend deployment
-        run: |
-          ACR="${{ secrets.ACR_LOGIN_SERVER }}"
-          sed "s|ACR_REGISTRY|$ACR|g" k8s/frontend-deployment.yaml | kubectl apply -f -
-      - name: Diagnose deployment
-        run: |
-          kubectl get pods -n workflow-dashboard -o wide
-          kubectl describe deployment workflow-frontend -n workflow-dashboard
-          kubectl get events -n workflow-dashboard --sort-by='.lastTimestamp' | tail -40
-      - name: Wait for rollout
-        run: kubectl rollout status deployment/workflow-frontend -n workflow-dashboard --timeout=600s
-      - name: Print public IP
-        run: |
-          kubectl get svc -n workflow-dashboard -o jsonpath='{.items[*].status.loadBalancer.ingress[0].ip}'
+    - uses: actions/checkout@v4
+    - name: Azure Login
+      uses: azure/login@v2
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
+    - name: Login to ACR
+      uses: azure/docker-login@v2
+      with:
+        login-server: ${{ secrets.ACR_LOGIN_SERVER }}
+        username: ${{ secrets.ACR_USERNAME }}
+        password: ${{ secrets.ACR_PASSWORD }}
+    - name: Build and push frontend
+      run: API_URL="${{ secrets.BACKEND_PUBLIC_URL }}"; if [ -z "$API_URL" ]; then
+        API_URL="http://localhost:8000"; fi; TAG="${{ github.sha }}"; docker build
+        -f Dockerfile.frontend --build-arg NEXT_PUBLIC_API_URL="$API_URL" -t ${{ secrets.ACR_LOGIN_SERVER
+        }}/workflow-frontend:$TAG . && docker push ${{ secrets.ACR_LOGIN_SERVER }}/workflow-frontend:$TAG
+    - name: Validate AKS target
+      run: 'echo "AKS target: ${{ secrets.AKS_CLUSTER_NAME }} (RG: ${{ secrets.AKS_RESOURCE_GROUP
+        }})" && az aks show --resource-group ${{ secrets.AKS_RESOURCE_GROUP }} --name
+        ${{ secrets.AKS_CLUSTER_NAME }} --query "{name:name,resourceGroup:resourceGroup,fqdn:fqdn}"
+        -o table'
+    - name: Install kubectl
+      run: curl -sSL "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+        -o kubectl && chmod +x kubectl && sudo mv kubectl /usr/local/bin/
+    - name: Get AKS credentials
+      run: az aks get-credentials --resource-group ${{ secrets.AKS_RESOURCE_GROUP
+        }} --name ${{ secrets.AKS_CLUSTER_NAME }} --overwrite-existing
+    - name: Apply namespace
+      run: kubectl apply -f k8s/namespace.yaml
+    - name: Create ACR pull secret
+      run: kubectl create secret docker-registry acr-pull-secret --docker-server=${{
+        secrets.ACR_LOGIN_SERVER }} --docker-username=${{ secrets.ACR_USERNAME }}
+        --docker-password=${{ secrets.ACR_PASSWORD }} -n workflow-dashboard --dry-run=client
+        -o yaml | kubectl apply -f -
+    - name: Apply frontend deployment
+      run: ACR="${{ secrets.ACR_LOGIN_SERVER }}"; TAG="${{ github.sha }}"; sed -e
+        "s|ACR_REGISTRY|${ACR}|g" -e "s|workflow-frontend:latest|workflow-frontend:${TAG}|g"
+        k8s/frontend-deployment.yaml | kubectl apply -f -
+    - name: Diagnose deployment (pods and events)
+      run: echo '--- Pods ---' ; kubectl get pods -n workflow-dashboard -o wide ;
+        echo '--- Deployment status ---' ; kubectl describe deployment workflow-frontend
+        -n workflow-dashboard | tail -80 ; echo '--- Recent events (root cause of
+        pending/back-off) ---' ; kubectl get events -n workflow-dashboard --sort-by='.lastTimestamp'
+        | tail -40
+    - name: Wait for rollout
+      run: kubectl rollout status deployment/workflow-frontend -n workflow-dashboard
+        --timeout=600s
+    - name: Show services
+      run: kubectl get svc -n workflow-dashboard
+    - name: Print public IP
+      run: 'echo "Public IP(s) for LoadBalancer service(s):"; kubectl get svc -n workflow-dashboard
+        -o jsonpath=''{range .items[?(@.spec.type=="LoadBalancer")]}{.metadata.name}:
+        {.status.loadBalancer.ingress[0].ip}{"\n"}{end}'' 2>/dev/null || echo "Pending
+        or no LoadBalancer services yet."'
